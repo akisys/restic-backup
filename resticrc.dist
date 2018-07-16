@@ -1,0 +1,30 @@
+# vim: ft=dosini:
+
+[restic]
+; restic long-opts
+no-cache
+no-lock
+cleanup-cache
+limit-upload = 300
+limit-download = 500
+
+[profilename]
+; the repo definition as excepted by restic
+repo = rest:http://remoteserver:8000/repodir/
+; plain pw - not recommended
+repo_pw = SuperSecret1234!!
+; or absolute file path to load
+; repo_pw = /etc/restic/resticpw
+; or env resolvable path to load
+; repo_pw = $HOME/.restic/resticpw
+
+[profilename.includes]
+; glob syntax as supported by restic
+/home/
+/tmp/
+
+[profilename.excludes]
+; glob syntax as supported by restic
+/etc/dbus*
+/var/lib*
+

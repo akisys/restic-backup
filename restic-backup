@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+
+"""Wrapper around Restic Backup Engine with multi profile support"""
+
+#Copyright (c) 2018 Alexander Kuemmel
+#
+#Permission is hereby granted, free of charge, to any person obtaining a copy
+#of this software and associated documentation files (the "Software"), to deal
+#in the Software without restriction, including without limitation the rights
+#to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+#copies of the Software, and to permit persons to whom the Software is
+#furnished to do so, subject to the following conditions:
+#
+#The above copyright notice and this permission notice shall be included in all
+#copies or substantial portions of the Software.
+#
+#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#SOFTWARE.
+
+import subprocess
+import os
+import sys
+import configparser
+import argparse
+from collections import namedtuple
+import logging
+import tempfile
+import itertools
+
+__version__ = '0.1'
+__author__ = 'Alexander Kuemmel <akisys@alexanderkuemmel.com>'
+__license__ = 'MIT'
+
+"""Globals definition"""
+
+loc = [
+  os.path.join(os.sep, 'etc','restic','resticrc'),
+  os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resticrc'),
+  os.path.join(os.path.expandvars('$HOME'),'.resticrc'),
+]
+
+cfg = configparser.SafeConfigParser(allow_no_value=True)
+
+ResticProfile = namedtuple(
+  'ResticProfile',
+  ['repo', 'cred', 'opts', 'env', 'includes', 'excludes']
+)
+
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger('restic-backup')
+
+
+def load_profile(profile: str, **kwargs) -> ResticProfile:
+  """Profile config autoloading"""
+  repo = cfg.get(profile, 'repo')
+  repo_pw = cfg.get(profile, 'repo_pw')
+  # check if we have a credentials file of some sort
+  cred_fp = os.path.expandvars(repo_pw)
+  if os.path.isfile(cred_fp):
+    # read file into mem
+    with open(cred_fp, 'r') as fp:
+      cred = fp.readline().strip()
+  else:
+    # assume all string
+    cred = str(repo_pw).strip()
+  includes = [p for p,_ in cfg.items(f'{profile}.includes')]
+  excludes = [p for p,_ in cfg.items(f'{profile}.excludes')]
+  # collect cli-options from config sections
+  global_restic = dict([(k,v) for k,v in cfg.items('restic')
+                    if not k.startswith('repo')])
+  local_profile = dict([(k,v) for k,v in cfg.items(profile)
+                    if not k.startswith('repo')])
+  # merge them with preference for local options
+  merge_opts = {**global_restic, **local_profile}
+  # convert config section keys into long-opts understood by restic
+  active_options = [[f'--{k}', v.strip()] for k,v in merge_opts.items()]
+  active_options = list(itertools.chain.from_iterable(active_options))
+  active_options = [i for i in active_options if len(i)]
+  # define a simple environment for later use
+  env = {
+    'RESTIC_REPOSITORY': repo,
+    'RESTIC_PASSWORD': cred,
+  }
+  return ResticProfile(
+      repo=repo,
+      cred=cred,
+      opts=active_options,
+      includes=includes,
+      excludes=excludes,
+      env=env)
+
+
+def init_cli() -> argparse.Namespace:
+  """Initialize CLI arguments parsing"""
+  cli = argparse.ArgumentParser()
+  cli.add_argument('-c', '--config')
+  cli.add_argument('-p', '--profile', required=True)
+  cli.add_argument('-d', '--debug', action='store_true', default=False)
+  cli.add_argument('command', nargs='+')
+  return cli.parse_args()
+
+
+def main():
+  """Local entrypoint"""
+  opts = init_cli()
+  if opts.debug:
+    logger.setLevel(logging.DEBUG)
+  # extend config files read list if required
+  if opts.config:
+    if not os.path.isfile(opts.config):
+      raise ValueError(f'File [{opts.config}] not found')
+    loc.append(opts.config)
+    logger.debug(f'Loading user-config: {opts.config}')
+  # read available config files
+  logger.debug(f'Loading: {loc}')
+  read_cfg_loc = cfg.read(loc)
+  if not read_cfg_loc:
+    raise ValueError('Cannot run without any config files')
+  logger.debug(f'Loaded: {read_cfg_loc}')
+  # check that the provided profile exists
+  if opts.profile not in cfg.sections():
+    raise ValueError(f'Profile [{opts.profile}] not found in config')
+  # load profile
+  repro = load_profile(**vars(opts))
+  logger.debug(f'Loaded profile: {opts.profile}')
+  callables = [entry for entry,_ in globals().items()
+               if entry.startswith('restic_cmd_')]
+  if opts.command:
+    logger.debug(f'Checking commands: {opts.command}')
+    arg_cmd = opts.command[0]
+    cmd_call = f'restic_cmd_{arg_cmd}'
+    if cmd_call in callables:
+      logger.debug('Running restic-override')
+      opts.command.pop(0)
+      globals()[cmd_call](repro, **vars(opts))
+    else:
+      logger.debug('Running restic-handover')
+      restic_cmd_generic(repro, **vars(opts))
+
+
+def get_proc_opts(primary_cmd: [], repro: ResticProfile, **kwargs) -> list:
+  proc_opts = ['restic']
+  if repro.opts:
+    proc_opts = proc_opts + repro.opts
+  proc_opts = proc_opts + primary_cmd
+  if kwargs['command']:
+    proc_opts = proc_opts + kwargs['command']
+  return proc_opts
+
+
+def run_proc(cmdline: [], repro: ResticProfile):
+  try:
+    proc = subprocess.run(
+      cmdline,
+      check=True,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      env={**os.environ.copy(), **repro.env}
+    )
+    if len(proc.stdout):
+      print(proc.stdout.decode('utf-8').strip())
+    sys.exit(proc.returncode)
+  except subprocess.CalledProcessError as cpe:
+    print(cpe.stderr.decode('utf-8').strip())
+    sys.exit(cpe.returncode)
+
+
+def restic_cmd_generic(repro: ResticProfile, **kwargs):
+  """Fallback command redirection to restic"""
+  proc_opts = get_proc_opts([], repro, **kwargs)
+  logger.debug(f'Running generic command wrapper for {proc_opts}')
+  run_proc(proc_opts, repro)
+
+
+def restic_cmd_backup(repro: ResticProfile, **kwargs):
+  """Customized backup command with profile and options autoload"""
+  tempdir = tempfile.TemporaryDirectory()
+  inc_fp = os.path.join(tempdir.name, 'include_files')
+  exc_fp = os.path.join(tempdir.name, 'exclude_files')
+  with open(inc_fp, 'w') as fp:
+    fp.write('\n'.join(repro.includes))
+  with open(exc_fp, 'w') as fp:
+    fp.write('\n'.join(repro.excludes))
+  primary_cmd = [
+    'backup',
+    f'--exclude-file={exc_fp}',
+    f'--files-from={inc_fp}'
+  ]
+  proc_opts = get_proc_opts(primary_cmd, repro, **kwargs)
+  try:
+    run_proc(proc_opts, repro)
+  finally:
+    tempdir.cleanup()
+
+
+def restic_cmd_init(repro: ResticProfile, **kwargs):
+  """Customized init command with profile and options autoload"""
+  primary_cmd = ['init']
+  proc_opts = get_proc_opts(primary_cmd, repro, **kwargs)
+  run_proc(proc_opts, repro)
+
+
+if __name__ == "__main__":
+  """Local entrypoint caller"""
+  main()
+
