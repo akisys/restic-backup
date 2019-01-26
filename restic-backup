@@ -45,6 +45,7 @@ loc = [
 ]
 
 cfg = configparser.SafeConfigParser(allow_no_value=True)
+cfg.optionxform = str
 
 ResticProfile = namedtuple(
   'ResticProfile',
@@ -154,20 +155,18 @@ def get_proc_opts(primary_cmd: [], repro: ResticProfile, **kwargs) -> list:
 
 
 def run_proc(cmdline: [], repro: ResticProfile):
-  try:
-    proc = subprocess.run(
-      cmdline,
-      check=True,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
-      env={**os.environ.copy(), **repro.env}
-    )
-    if len(proc.stdout):
-      print(proc.stdout.decode('utf-8').strip())
-    sys.exit(proc.returncode)
-  except subprocess.CalledProcessError as cpe:
-    print(cpe.stderr.decode('utf-8').strip())
-    sys.exit(cpe.returncode)
+  proc = subprocess.Popen(
+    cmdline,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    env={**os.environ.copy(), **repro.env}
+  )
+  for line in iter(proc.stdout.readline, b''):
+    print(line.decode('utf-8'), end='')
+  if proc.returncode != 0:
+    for line in iter(proc.stderr.readline, b''):
+      print(line.decode('utf-8'), end='')
+  sys.exit(proc.returncode)
 
 
 def restic_cmd_generic(repro: ResticProfile, **kwargs):
