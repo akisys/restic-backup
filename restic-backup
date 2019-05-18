@@ -66,9 +66,9 @@ def load_profile(profile: str, **kwargs) -> ResticProfile:
     # read file into mem
     with open(cred_fp, 'r') as fp:
       cred = fp.readline().strip()
+    logger.debug(f'Loaded password: [{cred}]')
   else:
-    # assume all string
-    cred = str(repo_pw).strip()
+    raise ValueError(f'Could not load password from file [{cred_fp}]')
   includes = [p for p,_ in cfg.items(f'{profile}.includes')]
   excludes = [p for p,_ in cfg.items(f'{profile}.excludes')]
   # collect cli-options from config sections
