@@ -49,17 +49,18 @@ cfg.optionxform = str
 
 ResticProfile = namedtuple(
   'ResticProfile',
-  ['repo', 'cred', 'opts', 'env', 'includes', 'excludes']
+  ['repo', 'cred', 'host', 'opts', 'env', 'includes', 'excludes']
 )
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger('restic-backup')
 
 
-def load_profile(profile: str, **kwargs) -> ResticProfile:
+def load_profile(profile: str, rootdir: str, **kwargs) -> ResticProfile:
   """Profile config autoloading"""
   repo = cfg.get(profile, 'repo')
   repo_pw = cfg.get(profile, 'repo_pw')
+  sourcehost = cfg.get(profile, 'repo_sourcehost')
   # check if we have a credentials file of some sort
   cred_fp = os.path.expandvars(repo_pw)
   if os.path.isfile(cred_fp):
@@ -69,13 +70,20 @@ def load_profile(profile: str, **kwargs) -> ResticProfile:
     logger.debug(f'Loaded password: [{cred}]')
   else:
     raise ValueError(f'Could not load password from file [{cred_fp}]')
-  includes = [p for p,_ in cfg.items(f'{profile}.includes')]
-  excludes = [p for p,_ in cfg.items(f'{profile}.excludes')]
+  # collect include and exclude files
+  if len(rootdir) > 0:
+    includes = [f'{rootdir}{os.sep}{p}' for p,_ in cfg.items(f'{profile}.includes')]
+    excludes = [f'{rootdir}{os.sep}{p}' for p,_ in cfg.items(f'{profile}.excludes')]
+  else:
+    includes = [p for p,_ in cfg.items(f'{profile}.includes')]
+    excludes = [p for p,_ in cfg.items(f'{profile}.excludes')]
   # collect cli-options from config sections
   global_restic = dict([(k,v) for k,v in cfg.items('restic')
                     if not k.startswith('repo')])
+  logger.debug(f'Global Restic OPS: {global_restic}')
   local_profile = dict([(k,v) for k,v in cfg.items(profile)
                     if not k.startswith('repo')])
+  logger.debug(f'Local Restic OPS: {local_profile}')
   # merge them with preference for local options
   merge_opts = {**global_restic, **local_profile}
   # convert config section keys into long-opts understood by restic
@@ -90,6 +98,7 @@ def load_profile(profile: str, **kwargs) -> ResticProfile:
   return ResticProfile(
       repo=repo,
       cred=cred,
+      host=sourcehost,
       opts=active_options,
       includes=includes,
       excludes=excludes,
@@ -102,6 +111,7 @@ def init_cli() -> argparse.Namespace:
   cli.add_argument('-c', '--config')
   cli.add_argument('-p', '--profile', required=True)
   cli.add_argument('-d', '--debug', action='store_true', default=False)
+  cli.add_argument('-r', '--rootdir', default="")
   cli.add_argument('command', nargs='+')
   return cli.parse_args()
 
@@ -188,7 +198,8 @@ def restic_cmd_backup(repro: ResticProfile, **kwargs):
   primary_cmd = [
     'backup',
     f'--exclude-file={exc_fp}',
-    f'--files-from={inc_fp}'
+    f'--files-from={inc_fp}',
+    f'--host={repro.host}'
   ]
   proc_opts = get_proc_opts(primary_cmd, repro, **kwargs)
   try:
