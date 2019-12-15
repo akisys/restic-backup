@@ -23,5 +23,5 @@ docker-compose run \
   mount "${HOST_MOUNTPATH}"
 
 echo "sudo permissions required for unmounting previous binds"
-sudo umount /mnt/restore
+sudo umount "${HOST_MOUNTPATH}"
 
