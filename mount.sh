@@ -15,7 +15,7 @@ cd "$(dirname $0)"
 echo "sudo permissions required for remounting binds"
 sudo mount --bind -o shared "${HOST_MOUNTPATH}" "${HOST_MOUNTPATH}"
 
-docker-compose run \
+docker-compose -f docker-compose.mount.yml run \
   --rm \
   -v "${HOST_MOUNTPATH}:${HOST_MOUNTPATH}:ro,shared" \
   restic-backup \
