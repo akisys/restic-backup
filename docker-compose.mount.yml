@@ -1,0 +1,21 @@
+version: "2.4"
+
+services:
+  restic-backup:
+    image: restic-backup:latest
+    build:
+      context: .
+    volumes:
+      - type: bind
+        source: /etc/restic/
+        target: /etc/restic/
+        read_only: true
+      - type: bind
+        source: $HOME/.config/rclone/
+        target: /root/.config/rclone/
+        read_only: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+
